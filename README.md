@@ -203,6 +203,7 @@ Ejemplo típico:
   "used_trim": true,
   "start_input": "04:34",
   "end_input": "10:27",
+  "speakers_count": null,
   "success": true,
   "error": null,
   "mp3_size_bytes": 7609846
@@ -210,6 +211,7 @@ Ejemplo típico:
 ```
 
 Notas:
+- `speakers_count` es opcional: si no se especifica, queda en `null`.
 - `original_video_title` mantiene el título original para trazabilidad (aunque uses nombre custom).
 - `start_input`/`end_input` guardan exactamente lo que el usuario escribió.
 - `success/error` permiten auditoría y debugging rápido.

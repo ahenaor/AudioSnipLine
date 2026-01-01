@@ -77,6 +77,24 @@ with c2:
         placeholder="mm:ss (ej: 10:27)",
     )
 
+st.markdown("#### Información adicional (opcional)")
+speakers_enabled = st.checkbox(
+    "Indicar número de hablantes",
+    value=False,
+    help="Si lo activas, el valor se guardará en el JSON final (si no, se guarda null).",
+)
+speakers_count = None
+if speakers_enabled:
+    speakers_count = st.number_input(
+        "¿Cuántas personas hablan en el audio?",
+        min_value=1,
+        step=1,
+        value=1,
+        format="%d",
+        help="Debe ser un entero (1, 2, 3, ...). Por ahora no cambia la lógica del recorte/descarga.",
+    )
+
+
 st.divider()
 
 # --- Botón centrado ---
@@ -123,6 +141,7 @@ if run:
                 custom_filename=custom_filename,
                 start=start,
                 end=end,
+                speakers_count=speakers_count,
                 preferredcodec="mp3",
                 on_progress=on_progress,
             )

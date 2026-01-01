@@ -75,6 +75,7 @@ def process_audio_job_in_memory(
     custom_filename: str = "",
     start: str = "",
     end: str = "",
+    speakers_count: Optional[int] = None,
     preferredcodec: str = "mp3",
     on_progress: Optional[Callable[[Dict], None]] = None,
 ) -> Tuple[Dict, bytes, bytes]:
@@ -98,6 +99,16 @@ def process_audio_job_in_memory(
 
     start_norm = _normalize_time(start) if start else None
     end_norm = _normalize_time(end) if end else None
+
+    # Validación opcional: número de hablantes
+    if speakers_count is not None:
+        # bool es subclase de int; lo excluimos explícitamente
+        if isinstance(speakers_count, bool) or not isinstance(speakers_count, int):
+            raise ValueError(
+                "El número de hablantes debe ser un entero (1, 2, 3, ...)."
+            )
+        if speakers_count < 1:
+            raise ValueError("El número de hablantes debe ser un entero >= 1.")
 
     # Validación END > START (cuando ambos están presentes)
     if start_norm and end_norm:
@@ -189,6 +200,7 @@ def process_audio_job_in_memory(
             "used_trim": used_trim,
             "start_input": start_input,
             "end_input": end_input,
+            "speakers_count": speakers_count,
             "success": success,
             "error": download_error,
             "mp3_size_bytes": len(mp3_bytes),
