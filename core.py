@@ -6,6 +6,8 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Callable, Dict, Optional, Tuple
 
+import yt_dlp
+
 # Idiomas soportados para selección manual desde la UI (nombre en inglés + código común)
 SUPPORTED_LANGUAGES: Dict[str, str] = {
     "es": "Spanish",
@@ -21,9 +23,6 @@ SUPPORTED_LANGUAGES: Dict[str, str] = {
     "ru": "Russian",
     "uk": "Ukrainian",
 }
-
-
-import yt_dlp
 
 
 def _normalize_time(t: str) -> Optional[str]:
@@ -198,6 +197,16 @@ def process_audio_job_in_memory(
             ],
             "noplaylist": True,
             "progress_hooks": [progress_hook],
+            "extractor_args": {
+                "youtube": {
+                    # "ios" y "tv" son clientes más estables para servidores de nube
+                    "player_client": ["ios", "tv", "mweb"],
+                    "skip": ["web", "android"],
+                }
+            },
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            },
         }
 
         # Recorte “durante descarga” con ffmpeg si aplica
