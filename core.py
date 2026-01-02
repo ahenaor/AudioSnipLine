@@ -6,6 +6,23 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Callable, Dict, Optional, Tuple
 
+# Idiomas soportados para selección manual desde la UI (nombre en inglés + código común)
+SUPPORTED_LANGUAGES: Dict[str, str] = {
+    "es": "Spanish",
+    "en": "English",
+    "pt": "Portuguese",
+    "de": "German",
+    "fr": "French",
+    "it": "Italian",
+    "ko": "Korean",
+    "ca": "Catalan",
+    "pl": "Polish",
+    "ja": "Japanese",
+    "ru": "Russian",
+    "uk": "Ukrainian",
+}
+
+
 import yt_dlp
 
 
@@ -76,6 +93,8 @@ def process_audio_job_in_memory(
     start: str = "",
     end: str = "",
     speakers_count: Optional[int] = None,
+    language: Optional[str] = None,
+    language_code: Optional[str] = None,
     preferredcodec: str = "mp3",
     on_progress: Optional[Callable[[Dict], None]] = None,
 ) -> Tuple[Dict, bytes, bytes]:
@@ -109,6 +128,26 @@ def process_audio_job_in_memory(
             )
         if speakers_count < 1:
             raise ValueError("El número de hablantes debe ser un entero >= 1.")
+
+    # Validación opcional: idioma seleccionado por el usuario
+    # Reglas:
+    # - Si el usuario no selecciona idioma: language y language_code deben ser None
+    # - Si selecciona: ambos deben venir informados y ser consistentes con SUPPORTED_LANGUAGES
+    if (language is None) ^ (language_code is None):
+        raise ValueError(
+            "Si seleccionas idioma, debes enviar tanto 'language' como 'language_code' (o ambos null)."
+        )
+
+    if language is not None and language_code is not None:
+        if not isinstance(language, str) or not isinstance(language_code, str):
+            raise ValueError("El idioma debe ser texto y el código debe ser texto.")
+        if language_code not in SUPPORTED_LANGUAGES:
+            raise ValueError(f"Código de idioma no soportado: {language_code!r}.")
+        expected = SUPPORTED_LANGUAGES[language_code]
+        if language != expected:
+            raise ValueError(
+                f"Inconsistencia de idioma: para {language_code!r} se esperaba {expected!r}, pero llegó {language!r}."
+            )
 
     # Validación END > START (cuando ambos están presentes)
     if start_norm and end_norm:
@@ -201,6 +240,8 @@ def process_audio_job_in_memory(
             "start_input": start_input,
             "end_input": end_input,
             "speakers_count": speakers_count,
+            "language": language,
+            "language_code": language_code,
             "success": success,
             "error": download_error,
             "mp3_size_bytes": len(mp3_bytes),

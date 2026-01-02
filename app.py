@@ -8,6 +8,22 @@ from core import process_audio_job_in_memory
 
 STATE_RESULT = "result_payload"
 
+# Idiomas soportados (UI -> metadata JSON)
+_LANGUAGE_OPTIONS = {
+    "Español (es)": ("Spanish", "es"),
+    "Inglés (en)": ("English", "en"),
+    "Portugués (pt)": ("Portuguese", "pt"),
+    "Alemán (de)": ("German", "de"),
+    "Francés (fr)": ("French", "fr"),
+    "Italiano (it)": ("Italian", "it"),
+    "Coreano (ko)": ("Korean", "ko"),
+    "Catalán (ca)": ("Catalan", "ca"),
+    "Polaco (pl)": ("Polish", "pl"),
+    "Japonés (ja)": ("Japanese", "ja"),
+    "Ruso (ru)": ("Russian", "ru"),
+    "Ucraniano (uk)": ("Ukrainian", "uk"),
+}
+
 
 def fmt_mb(n_bytes: int) -> str:
     return f"{n_bytes / (1024 * 1024):.2f} MB"
@@ -78,11 +94,29 @@ with c2:
     )
 
 st.markdown("#### Información adicional (opcional)")
+language_enabled = st.checkbox(
+    "Seleccionar idioma del audio",
+    value=False,
+    help="Opcional. Se guarda en el JSON final como nombre en inglés (language) y acrónimo (language_code). Si no seleccionas, ambos quedan null.",
+)
+
+language = None
+language_code = None
+if language_enabled:
+    language_label = st.selectbox(
+        "Idioma del audio",
+        options=list(_LANGUAGE_OPTIONS.keys()),
+        index=0,
+        help="Este valor solo se persiste en el JSON; por ahora no cambia la lógica del procesamiento.",
+    )
+    language, language_code = _LANGUAGE_OPTIONS[language_label]
+
 speakers_enabled = st.checkbox(
     "Indicar número de hablantes",
     value=False,
-    help="Si lo activas, el valor se guardará en el JSON final (si no, se guarda null).",
+    help="Opcional. Si lo activas, el valor se guardará en el JSON final (si no, se guarda null).",
 )
+
 speakers_count = None
 if speakers_enabled:
     speakers_count = st.number_input(
@@ -93,7 +127,6 @@ if speakers_enabled:
         format="%d",
         help="Debe ser un entero (1, 2, 3, ...). Por ahora no cambia la lógica del recorte/descarga.",
     )
-
 
 st.divider()
 
@@ -142,6 +175,8 @@ if run:
                 start=start,
                 end=end,
                 speakers_count=speakers_count,
+                language=language,
+                language_code=language_code,
                 preferredcodec="mp3",
                 on_progress=on_progress,
             )

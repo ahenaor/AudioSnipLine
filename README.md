@@ -204,6 +204,8 @@ Ejemplo típico:
   "start_input": "04:34",
   "end_input": "10:27",
   "speakers_count": null,
+  "language": null,
+  "language_code": null,
   "success": true,
   "error": null,
   "mp3_size_bytes": 7609846
@@ -212,6 +214,9 @@ Ejemplo típico:
 
 Notas:
 - `speakers_count` es opcional: si no se especifica, queda en `null`.
+- `language` y `language_code` son opcionales: si no se seleccionan, quedan en `null`.
+  - `language` se guarda en inglés (por ejemplo: `Spanish`, `English`, `Korean`).
+  - `language_code` se guarda como acrónimo común (por ejemplo: `es`, `en`, `ko`).
 - `original_video_title` mantiene el título original para trazabilidad (aunque uses nombre custom).
 - `start_input`/`end_input` guardan exactamente lo que el usuario escribió.
 - `success/error` permiten auditoría y debugging rápido.
