@@ -202,17 +202,27 @@ def process_audio_job_in_memory(
 
         # Recorte “durante descarga” con ffmpeg si aplica
         if used_trim:
-            ffmpeg_i_args = []
+            trim_args = []
             if start_norm:
-                ffmpeg_i_args += ["-ss", start_norm]
+                trim_args += ["-ss", start_norm]
             if end_norm:
-                ffmpeg_i_args += ["-to", end_norm]
-            ydl_opts.update(
-                {
-                    "external_downloader": "ffmpeg",
-                    "external_downloader_args": {"ffmpeg_i": ffmpeg_i_args},
-                }
-            )
+                trim_args += ["-to", end_norm]
+
+            # Pasamos los argumentos directamente al postprocesador
+            # en lugar de usar ffmpeg como descargador externo
+            ydl_opts["postprocessor_args"] = trim_args
+        # if used_trim:
+        #    ffmpeg_i_args = []
+        #    if start_norm:
+        #        ffmpeg_i_args += ["-ss", start_norm]
+        #    if end_norm:
+        #        ffmpeg_i_args += ["-to", end_norm]
+        #    ydl_opts.update(
+        #        {
+        #            "external_downloader": "ffmpeg",
+        #            "external_downloader_args": {"ffmpeg_i": ffmpeg_i_args},
+        #        }
+        #    )
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
