@@ -186,6 +186,7 @@ def process_audio_job_in_memory(
 
         # “Mejor calidad posible” + fallback; extracción a mp3 V0
         ydl_opts = {
+            "js_runtime": "node",
             "format": "bestaudio[ext=m4a]/bestaudio/best[ext=mp4]/best",
             "outtmpl": outtmpl,
             "postprocessors": [
@@ -199,8 +200,7 @@ def process_audio_job_in_memory(
             "progress_hooks": [progress_hook],
             "extractor_args": {
                 "youtube": {
-                    # "ios" y "tv" son clientes más estables para servidores de nube
-                    "player_client": ["ios", "tv", "mweb"],
+                    "player_client": ["tv", "ios", "mweb"],
                     "skip": ["web", "android"],
                 }
             },
