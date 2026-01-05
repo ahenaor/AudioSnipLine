@@ -1,14 +1,18 @@
 import json
 import os
 import re
+import ssl
+import subprocess
 import tempfile
 from datetime import datetime
-from functools import lru_cache
 from typing import Callable, Dict, Optional, Tuple
 
-import yt_dlp
+from pytubefix import YouTube
 
-# Idiomas soportados para selección manual desde la UI (nombre en inglés + código común)
+ssl._create_default_https_context = ssl._create_unverified_context
+# -----------------------------
+
+# Idiomas soportados
 SUPPORTED_LANGUAGES: Dict[str, str] = {
     "es": "Spanish",
     "en": "English",
@@ -32,58 +36,24 @@ def _normalize_time(t: str) -> Optional[str]:
     t = t.strip()
     if not t:
         return None
-
-    # mm:ss -> 00:mm:ss
     if re.match(r"^\d{1,2}:\d{2}$", t):
         return "00:" + t
-
-    # hh:mm:ss
     if re.match(r"^\d{1,2}:\d{2}:\d{2}$", t):
         return t
-
     raise ValueError("Tiempo inválido. Usa mm:ss o hh:mm:ss (ej: 04:34 o 00:04:34).")
 
 
 def _time_to_seconds(hhmmss: str) -> int:
-    """hh:mm:ss -> seconds"""
     h, m, s = (int(x) for x in hhmmss.split(":"))
     return h * 3600 + m * 60 + s
 
 
 def _sanitize_name(name: str) -> str:
-    """Sanitiza nombre para filename (sin paths)."""
     name = name.strip()
     name = re.sub(r"\s+", " ", name)
     name = re.sub(r"[^a-zA-Z0-9 _-]+", "", name)
     name = name.strip(" ._-")
     return name
-
-
-@lru_cache(maxsize=256)
-def _resolve_download_false(url: str) -> Tuple[str, str, Optional[str]]:
-    """
-    Cachea información mínima desde extract_info(download=False) y un basename seguro
-    para construir el output cuando no hay CUSTOM_FILENAME.
-
-    Returns: (safe_base_title, original_video_title, video_id)
-    """
-    ydl_opts = {"quiet": True, "noplaylist": True}
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-
-    original_title = info.get("title") or "audio"
-    video_id = info.get("id")
-
-    # Sanitización consistente con yt-dlp (prepare_filename) usando el info real
-    info_for_name = dict(info)
-    info_for_name["ext"] = "mp3"
-    with yt_dlp.YoutubeDL(
-        {"outtmpl": "%(title)s.%(ext)s", "quiet": True, "noplaylist": True}
-    ) as name_ydl:
-        safe_path = name_ydl.prepare_filename(info_for_name)
-
-    safe_base_title = os.path.splitext(os.path.basename(safe_path))[0] or "audio"
-    return safe_base_title, original_title, video_id
 
 
 def process_audio_job_in_memory(
@@ -98,155 +68,124 @@ def process_audio_job_in_memory(
     on_progress: Optional[Callable[[Dict], None]] = None,
 ) -> Tuple[Dict, bytes, bytes]:
     """
-    Procesa audio desde YouTube y devuelve:
-      - metadata dict
-      - mp3_bytes
-      - json_bytes
-
-    Nota: yt-dlp/ffmpeg requieren escritura a disco durante el proceso, por eso
-    usamos un TemporaryDirectory por ejecución (ephemeral) y luego retornamos bytes.
+    Procesa audio usando pytubefix (cliente nativo Python) y ffmpeg local.
+    Incluye bypass de SSL para evitar errores en macOS.
     """
 
     if not url or not url.strip():
         raise ValueError("URL no puede estar vacía.")
 
     execution_ts = datetime.now().strftime("%Y%m%d%H%M%S")
-
-    start_input = start
-    end_input = end
-
+    start_input, end_input = start, end
     start_norm = _normalize_time(start) if start else None
     end_norm = _normalize_time(end) if end else None
 
-    # Validación opcional: número de hablantes
-    if speakers_count is not None:
-        # bool es subclase de int; lo excluimos explícitamente
-        if isinstance(speakers_count, bool) or not isinstance(speakers_count, int):
-            raise ValueError(
-                "El número de hablantes debe ser un entero (1, 2, 3, ...)."
-            )
-        if speakers_count < 1:
-            raise ValueError("El número de hablantes debe ser un entero >= 1.")
+    if speakers_count is not None and (
+        not isinstance(speakers_count, int) or speakers_count < 1
+    ):
+        raise ValueError("El número de hablantes debe ser un entero >= 1.")
 
-    # Validación opcional: idioma seleccionado por el usuario
-    # Reglas:
-    # - Si el usuario no selecciona idioma: language y language_code deben ser None
-    # - Si selecciona: ambos deben venir informados y ser consistentes con SUPPORTED_LANGUAGES
     if (language is None) ^ (language_code is None):
         raise ValueError(
-            "Si seleccionas idioma, debes enviar tanto 'language' como 'language_code' (o ambos null)."
+            "Si seleccionas idioma, debes enviar tanto 'language' como 'language_code'."
         )
 
-    if language is not None and language_code is not None:
-        if not isinstance(language, str) or not isinstance(language_code, str):
-            raise ValueError("El idioma debe ser texto y el código debe ser texto.")
-        if language_code not in SUPPORTED_LANGUAGES:
-            raise ValueError(f"Código de idioma no soportado: {language_code!r}.")
-        expected = SUPPORTED_LANGUAGES[language_code]
-        if language != expected:
-            raise ValueError(
-                f"Inconsistencia de idioma: para {language_code!r} se esperaba {expected!r}, pero llegó {language!r}."
-            )
-
-    # Validación END > START (cuando ambos están presentes)
     if start_norm and end_norm:
         if _time_to_seconds(end_norm) <= _time_to_seconds(start_norm):
             raise ValueError(
-                f"END debe ser mayor que START. (START={start_input!r}, END={end_input!r})"
+                f"END debe ser mayor que START. (START={start_input}, END={end_input})"
             )
 
     used_custom_filename = bool(custom_filename and custom_filename.strip())
     used_trim = bool(start_norm or end_norm)
 
-    def progress_hook(d: Dict):
-        if on_progress:
-            on_progress(d)
-
     download_error = None
+    success = False
+    mp3_bytes = b""
+    video_id = "unknown"
+    original_title = "Unknown"
 
-    safe_base_title, original_title, video_id = _resolve_download_false(url)
-
-    if used_custom_filename:
-        base_name = _sanitize_name(custom_filename)
-        if not base_name:
-            raise ValueError("El nombre de salida quedó vacío tras sanitizarlo.")
-    else:
-        base_name = safe_base_title
-
-    mp3_filename = f"{base_name}.{preferredcodec}"
+    # Nombre base
+    base_name = (
+        _sanitize_name(custom_filename)
+        if used_custom_filename
+        else f"audio_{execution_ts}"
+    )
+    mp3_filename = f"{base_name}.mp3"
     json_filename = f"{base_name}.json"
 
     with tempfile.TemporaryDirectory(prefix="audiosnipline_") as tmpdir:
-        outtmpl = (
-            os.path.join(tmpdir, f"{base_name}.%(ext)s")
-            if used_custom_filename
-            else os.path.join(tmpdir, "%(title)s.%(ext)s")
-        )
         final_mp3_path = os.path.join(tmpdir, mp3_filename)
 
-        # “Mejor calidad posible” + fallback; extracción a mp3 V0
-        ydl_opts = {
-            "js_runtime": "node",
-            "format": "bestaudio[ext=m4a]/bestaudio/best[ext=mp4]/best",
-            "outtmpl": outtmpl,
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": preferredcodec,
-                    "preferredquality": "0",  # V0 (alta calidad)
-                }
-            ],
-            "noplaylist": True,
-            "progress_hooks": [progress_hook],
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["tv", "ios", "mweb"],
-                    "skip": ["web", "android"],
-                }
-            },
-            "http_headers": {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-            },
-        }
-
-        # Recorte “durante descarga” con ffmpeg si aplica
-        if used_trim:
-            trim_args = []
-            if start_norm:
-                trim_args += ["-ss", start_norm]
-            if end_norm:
-                trim_args += ["-to", end_norm]
-
-            # Pasamos los argumentos directamente al postprocesador
-            # en lugar de usar ffmpeg como descargador externo
-            ydl_opts["postprocessor_args"] = trim_args
-        # if used_trim:
-        #    ffmpeg_i_args = []
-        #    if start_norm:
-        #        ffmpeg_i_args += ["-ss", start_norm]
-        #    if end_norm:
-        #        ffmpeg_i_args += ["-to", end_norm]
-        #    ydl_opts.update(
-        #        {
-        #            "external_downloader": "ffmpeg",
-        #            "external_downloader_args": {"ffmpeg_i": ffmpeg_i_args},
-        #        }
-        #    )
-
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                _ = ydl.extract_info(url, download=True)
+            if on_progress:
+                on_progress({"status": "downloading", "_percent_str": "10%"})
+
+            # --- FASE 1: PYTUBEFIX EXTRACTION ---
+            # Instanciamos el objeto YouTube.
+            # client='WEB' suele ser el más estable para evitar throttles
+            yt = YouTube(url, client="WEB")
+
+            video_id = yt.video_id
+            original_title = yt.title
+
+            # Si el usuario no puso nombre, usamos el título real ahora que lo tenemos
+            if not used_custom_filename:
+                base_name = _sanitize_name(original_title)
+                mp3_filename = f"{base_name}.mp3"
+                json_filename = f"{base_name}.json"
+                final_mp3_path = os.path.join(tmpdir, mp3_filename)
+
+            if on_progress:
+                on_progress({"status": "downloading", "_percent_str": "30%"})
+
+            # Seleccionar el stream de audio (m4a/webm con mejor bitrate)
+            audio_stream = yt.streams.get_audio_only()
+            if not audio_stream:
+                raise Exception("No se encontró stream de audio disponible.")
+
+            if on_progress:
+                on_progress({"status": "downloading", "_percent_str": "50%"})
+
+            # Descarga del crudo
+            raw_file_path = audio_stream.download(
+                output_path=tmpdir, filename_prefix="raw_"
+            )
+
+            if on_progress:
+                on_progress({"status": "downloading", "_percent_str": "80%"})
+
+            # --- FASE 2: CONVERSIÓN Y RECORTE (FFMPEG) ---
+
+            cmd = ["ffmpeg", "-y", "-i", raw_file_path]
+            cmd += ["-hide_banner", "-loglevel", "error"]
+
+            if start_norm:
+                cmd += ["-ss", start_norm]
+            if end_norm:
+                cmd += ["-to", end_norm]
+
+            # Forzamos codec mp3 y bitrate decente
+            cmd += ["-acodec", "libmp3lame", "-q:a", "2"]
+            cmd.append(final_mp3_path)
+
+            subprocess.run(
+                cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+
+            if on_progress:
+                on_progress({"status": "finished", "_percent_str": "100%"})
+
+            if os.path.exists(final_mp3_path):
+                with open(final_mp3_path, "rb") as f:
+                    mp3_bytes = f.read()
+                success = True
+
         except Exception as e:
-            download_error = repr(e)
+            download_error = str(e)
+            success = False
 
-        success = os.path.exists(final_mp3_path) and download_error is None
-
-        mp3_bytes = b""
-        if os.path.exists(final_mp3_path):
-            with open(final_mp3_path, "rb") as f:
-                mp3_bytes = f.read()
-
-        # Metadata limpia (sin duplicados innecesarios)
+        # Metadata final
         metadata = {
             "url": url,
             "execution_ts": execution_ts,
@@ -264,7 +203,9 @@ def process_audio_job_in_memory(
             "success": success,
             "error": download_error,
             "mp3_size_bytes": len(mp3_bytes),
+            "backend": "pytubefix-local-ssl-patched",
         }
 
         json_bytes = json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8")
+
         return metadata, mp3_bytes, json_bytes
