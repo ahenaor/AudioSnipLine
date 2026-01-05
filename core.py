@@ -7,8 +7,10 @@ import tempfile
 from datetime import datetime
 from typing import Callable, Dict, Optional, Tuple
 
+# Reemplazamos requests por pytubefix
 from pytubefix import YouTube
 
+# --- PARCHE SSL (Mantenido para portabilidad macOS/Linux) ---
 ssl._create_default_https_context = ssl._create_unverified_context
 # -----------------------------
 
@@ -68,8 +70,8 @@ def process_audio_job_in_memory(
     on_progress: Optional[Callable[[Dict], None]] = None,
 ) -> Tuple[Dict, bytes, bytes]:
     """
-    Procesa audio usando pytubefix (cliente nativo Python) y ffmpeg local.
-    Incluye bypass de SSL para evitar errores en macOS.
+    Procesa audio usando pytubefix con cliente ANDROID para evitar bloqueos
+    de PoToken en entornos de nube (Streamlit Cloud).
     """
 
     if not url or not url.strip():
@@ -121,15 +123,14 @@ def process_audio_job_in_memory(
             if on_progress:
                 on_progress({"status": "downloading", "_percent_str": "10%"})
 
-            # --- FASE 1: PYTUBEFIX EXTRACTION ---
-            # Instanciamos el objeto YouTube.
-            # client='WEB' suele ser el más estable para evitar throttles
-            yt = YouTube(url, client="WEB")
+            # --- FASE 1: PYTUBEFIX EXTRACTION (CLIENTE ANDROID) ---
+            # El cambio CLAVE: client='ANDROID'
+            # Esto evita el chequeo SABR/PoToken que afecta a client='WEB' en servidores.
+            yt = YouTube(url, client="ANDROID")
 
             video_id = yt.video_id
             original_title = yt.title
 
-            # Si el usuario no puso nombre, usamos el título real ahora que lo tenemos
             if not used_custom_filename:
                 base_name = _sanitize_name(original_title)
                 mp3_filename = f"{base_name}.mp3"
@@ -139,10 +140,20 @@ def process_audio_job_in_memory(
             if on_progress:
                 on_progress({"status": "downloading", "_percent_str": "30%"})
 
-            # Seleccionar el stream de audio (m4a/webm con mejor bitrate)
+            # Obtener audio. El cliente Android suele devolver M4A o WEBM.
             audio_stream = yt.streams.get_audio_only()
             if not audio_stream:
-                raise Exception("No se encontró stream de audio disponible.")
+                # Fallback: intentar filtrar por audio si get_audio_only falla en Android
+                audio_streams = (
+                    yt.streams.filter(only_audio=True).order_by("abr").desc()
+                )
+                if audio_streams:
+                    audio_stream = audio_streams.first()
+
+            if not audio_stream:
+                raise Exception(
+                    "No se encontró stream de audio disponible (Android Client)."
+                )
 
             if on_progress:
                 on_progress({"status": "downloading", "_percent_str": "50%"})
@@ -165,8 +176,8 @@ def process_audio_job_in_memory(
             if end_norm:
                 cmd += ["-to", end_norm]
 
-            # Forzamos codec mp3 y bitrate decente
-            cmd += ["-acodec", "libmp3lame", "-q:a", "2"]
+            # Forzamos re-encode a MP3 estéreo estándar
+            cmd += ["-acodec", "libmp3lame", "-q:a", "2", "-ac", "2"]
             cmd.append(final_mp3_path)
 
             subprocess.run(
@@ -183,6 +194,8 @@ def process_audio_job_in_memory(
 
         except Exception as e:
             download_error = str(e)
+            # Logueamos el error completo para debug si es necesario
+            print(f"DEBUG ERROR: {e}")
             success = False
 
         # Metadata final
@@ -203,7 +216,7 @@ def process_audio_job_in_memory(
             "success": success,
             "error": download_error,
             "mp3_size_bytes": len(mp3_bytes),
-            "backend": "pytubefix-local-ssl-patched",
+            "backend": "pytubefix-android-client",  # Actualizado
         }
 
         json_bytes = json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8")
