@@ -10,9 +10,10 @@ from typing import Callable, Dict, Optional, Tuple
 # Reemplazamos requests por pytubefix
 from pytubefix import YouTube
 
-# --- PARCHE SSL (Mantenido para portabilidad macOS/Linux) ---
+# --- PARCHE SSL ---
+# Necesario para macOS local
 ssl._create_default_https_context = ssl._create_unverified_context
-# -----------------------------
+# ------------------
 
 # Idiomas soportados
 SUPPORTED_LANGUAGES: Dict[str, str] = {
@@ -70,8 +71,8 @@ def process_audio_job_in_memory(
     on_progress: Optional[Callable[[Dict], None]] = None,
 ) -> Tuple[Dict, bytes, bytes]:
     """
-    Procesa audio usando pytubefix con cliente ANDROID para evitar bloqueos
-    de PoToken en entornos de nube (Streamlit Cloud).
+    Procesa audio usando pytubefix con ESTRATEGIA DE FALLBACK.
+    Intenta WEB -> ANDROID -> TV para maximizar compatibilidad Local vs Cloud.
     """
 
     if not url or not url.strip():
@@ -106,6 +107,7 @@ def process_audio_job_in_memory(
     mp3_bytes = b""
     video_id = "unknown"
     original_title = "Unknown"
+    used_backend_client = "none"
 
     # Nombre base
     base_name = (
@@ -121,12 +123,45 @@ def process_audio_job_in_memory(
 
         try:
             if on_progress:
-                on_progress({"status": "downloading", "_percent_str": "10%"})
+                on_progress({"status": "downloading", "_percent_str": "5%"})
 
-            # --- FASE 1: PYTUBEFIX EXTRACTION (CLIENTE ANDROID) ---
-            # El cambio CLAVE: client='ANDROID'
-            # Esto evita el chequeo SABR/PoToken que afecta a client='WEB' en servidores.
-            yt = YouTube(url, client="ANDROID")
+            # --- ESTRATEGIA DE FALLBACK DE CLIENTES ---
+            # 1. WEB: Funciona bien en local (IP residencial). Falla en Cloud (PoToken).
+            # 2. ANDROID: Suele saltar el bloqueo en Cloud. A veces falla en local (403).
+            # 3. TV: Opción de respaldo ("Nuclear option").
+
+            clients_to_try = ["WEB", "ANDROID", "TV"]
+            yt = None
+            audio_stream = None
+
+            last_exception = None
+
+            for client_type in clients_to_try:
+                try:
+                    # Intentamos instanciar con el cliente actual
+                    print(f"🔄 Intentando con cliente: {client_type}...")
+                    yt_candidate = YouTube(url, client=client_type)
+
+                    # Intentamos leer metadata para ver si el cliente tiene acceso real
+                    _ = yt_candidate.title
+
+                    # Intentamos obtener streams
+                    streams = yt_candidate.streams
+
+                    # Si llegamos aquí sin error, este cliente funciona
+                    yt = yt_candidate
+                    used_backend_client = client_type
+                    print(f"✅ Cliente {client_type} conectado exitosamente.")
+                    break
+                except Exception as ex:
+                    print(f"⚠️ Cliente {client_type} falló: {ex}")
+                    last_exception = ex
+                    continue
+
+            if not yt:
+                raise Exception(
+                    f"Todos los clientes fallaron. Último error: {last_exception}"
+                )
 
             video_id = yt.video_id
             original_title = yt.title
@@ -140,10 +175,10 @@ def process_audio_job_in_memory(
             if on_progress:
                 on_progress({"status": "downloading", "_percent_str": "30%"})
 
-            # Obtener audio. El cliente Android suele devolver M4A o WEBM.
+            # Selección de stream robusta
             audio_stream = yt.streams.get_audio_only()
             if not audio_stream:
-                # Fallback: intentar filtrar por audio si get_audio_only falla en Android
+                # Fallback manual de filtro
                 audio_streams = (
                     yt.streams.filter(only_audio=True).order_by("abr").desc()
                 )
@@ -152,7 +187,7 @@ def process_audio_job_in_memory(
 
             if not audio_stream:
                 raise Exception(
-                    "No se encontró stream de audio disponible (Android Client)."
+                    f"No se encontró audio con cliente {used_backend_client}"
                 )
 
             if on_progress:
@@ -176,7 +211,7 @@ def process_audio_job_in_memory(
             if end_norm:
                 cmd += ["-to", end_norm]
 
-            # Forzamos re-encode a MP3 estéreo estándar
+            # Forzamos MP3 estéreo
             cmd += ["-acodec", "libmp3lame", "-q:a", "2", "-ac", "2"]
             cmd.append(final_mp3_path)
 
@@ -194,8 +229,7 @@ def process_audio_job_in_memory(
 
         except Exception as e:
             download_error = str(e)
-            # Logueamos el error completo para debug si es necesario
-            print(f"DEBUG ERROR: {e}")
+            print(f"DEBUG FINAL ERROR: {e}")
             success = False
 
         # Metadata final
@@ -216,7 +250,7 @@ def process_audio_job_in_memory(
             "success": success,
             "error": download_error,
             "mp3_size_bytes": len(mp3_bytes),
-            "backend": "pytubefix-android-client",  # Actualizado
+            "backend": f"pytubefix-fallback-strategy ({used_backend_client})",
         }
 
         json_bytes = json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8")
